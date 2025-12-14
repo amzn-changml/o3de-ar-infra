@@ -29,7 +29,7 @@ on:
 env:
   MAX_RETRY_ATTEMPTS: 3
   MAX_AGE_HOURS: 24
-  TARGET_REPO: amzn-changml/o3de
+  TARGET_REPO: o3de/o3de
   TARGET_WORKFLOW: ar.yml
 
 jobs:
@@ -42,6 +42,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.O3DE_WORKFLOW_TOKEN }}
         run: |
+          # Check if this is an explicit trigger (overrides limits)
+          EXPLICIT_TRIGGER="false"
+          if [ "${{ github.event_name }}" == "repository_dispatch" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            EXPLICIT_TRIGGER="true"
+            echo "Explicit trigger detected - time and retry limits will be ignored."
+          fi
+          echo "explicit_trigger=$EXPLICIT_TRIGGER" >> $GITHUB_OUTPUT
+
           # If run_id is provided via workflow_dispatch, use it
           if [ -n "${{ inputs.run_id }}" ]; then
             RUN_ID="${{ inputs.run_id }}"
@@ -70,12 +78,12 @@ jobs:
           ATTEMPT=$(echo "$RUN_INFO" | jq -r '.attempt')
           CREATED_AT=$(echo "$RUN_INFO" | jq -r '.createdAt')
 
-          # Check if run is within the time limit
+          # Check if run is within the time limit (skip for explicit triggers)
           CREATED_EPOCH=$(date -d "$CREATED_AT" +%s)
           NOW_EPOCH=$(date +%s)
           AGE_HOURS=$(( (NOW_EPOCH - CREATED_EPOCH) / 3600 ))
 
-          if [ $AGE_HOURS -ge ${{ env.MAX_AGE_HOURS }} ]; then
+          if [ "$EXPLICIT_TRIGGER" == "false" ] && [ $AGE_HOURS -ge ${{ env.MAX_AGE_HOURS }} ]; then
             echo "Workflow run is $AGE_HOURS hours old, exceeds ${{ env.MAX_AGE_HOURS }} hour limit."
             echo "found=false" >> $GITHUB_OUTPUT
             exit 0
@@ -87,13 +95,13 @@ jobs:
           echo "age_hours=$AGE_HOURS" >> $GITHUB_OUTPUT
 
       - name: Retry failed jobs
-        if: ${{ steps.get-run.outputs.found == 'true' && steps.get-run.outputs.attempt < env.MAX_RETRY_ATTEMPTS }}
+        if: ${{ steps.get-run.outputs.found == 'true' && (steps.get-run.outputs.explicit_trigger == 'true' || steps.get-run.outputs.attempt < env.MAX_RETRY_ATTEMPTS) }}
         env:
           GH_TOKEN: ${{ secrets.O3DE_WORKFLOW_TOKEN }}
         run: |
           gh run rerun ${{ steps.get-run.outputs.run_id }} --failed -R ${{ env.TARGET_REPO }}
 
       - name: Notify retry limit reached
-        if: ${{ steps.get-run.outputs.found == 'true' && steps.get-run.outputs.attempt >= env.MAX_RETRY_ATTEMPTS }}
+        if: ${{ steps.get-run.outputs.found == 'true' && steps.get-run.outputs.explicit_trigger == 'false' && steps.get-run.outputs.attempt >= env.MAX_RETRY_ATTEMPTS }}
         run: |
           echo "::warning::Maximum retry attempts (${{ env.MAX_RETRY_ATTEMPTS }}) reached for workflow run ${{ steps.get-run.outputs.run_id }}. Manual intervention may be required."
