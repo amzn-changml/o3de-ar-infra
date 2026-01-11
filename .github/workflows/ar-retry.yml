@@ -99,9 +99,40 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.O3DE_WORKFLOW_TOKEN }}
         run: |
-          gh run rerun ${{ steps.get-run.outputs.run_id }} --failed -R ${{ env.TARGET_REPO }}
+          RUN_ID="${{ steps.get-run.outputs.run_id }}"
+          
+          # Get list of failed jobs
+          echo "Fetching failed jobs for workflow run $RUN_ID..."
+          FAILED_JOBS=$(gh run view $RUN_ID --repo ${{ env.TARGET_REPO }} --json jobs --jq '.jobs[] | select(.conclusion == "failure") | .name')
+          
+          if [ -z "$FAILED_JOBS" ]; then
+            echo "No failed jobs found in workflow run $RUN_ID."
+            exit 0
+          fi
+          
+          echo "============================================"
+          echo "Failed jobs to be retried:"
+          echo "============================================"
+          echo "$FAILED_JOBS" | while read -r job; do
+            echo "  - $job"
+          done
+          echo "============================================"
+          
+          # Count failed jobs
+          FAILED_COUNT=$(echo "$FAILED_JOBS" | wc -l)
+          echo "Total failed jobs: $FAILED_COUNT"
+          echo ""
+          
+          # Retry the failed jobs
+          echo "Initiating retry for workflow run $RUN_ID (attempt ${{ steps.get-run.outputs.attempt }})..."
+          gh run rerun $RUN_ID --failed -R ${{ env.TARGET_REPO }}
+          
+          echo ""
+          echo "Retry initiated successfully for $FAILED_COUNT job(s)."
 
       - name: Notify retry limit reached
         if: ${{ steps.get-run.outputs.found == 'true' && steps.get-run.outputs.explicit_trigger == 'false' && steps.get-run.outputs.attempt >= env.MAX_RETRY_ATTEMPTS }}
         run: |
           echo "::warning::Maximum retry attempts (${{ env.MAX_RETRY_ATTEMPTS }}) reached for workflow run ${{ steps.get-run.outputs.run_id }}. Manual intervention may be required."
+
+
